@@ -73,7 +73,19 @@ function DashboardApp() {
       }
     };
     chrome.runtime.onMessage.addListener(listener);
-    return () => chrome.runtime.onMessage.removeListener(listener);
+
+    const pollId = setInterval(() => {
+      chrome.runtime.sendMessage({ type: 'GET_RECORDING_STATE' }).then((res) => {
+        if (res?.state) {
+          setRecState(res.state);
+        }
+      }).catch(() => {});
+    }, 1000);
+
+    return () => {
+      chrome.runtime.onMessage.removeListener(listener);
+      clearInterval(pollId);
+    };
   }, []);
 
   const formatBytes = (bytes: number) => {
