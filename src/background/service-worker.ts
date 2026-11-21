@@ -61,13 +61,28 @@ interface PendingRequest {
 const pendingRequests = new Map<string, PendingRequest>();
 const recentErrorHashes = new Set<string>();
 
+let counterSyncTimer: ReturnType<typeof setTimeout> | null = null;
+
 async function persistState() {
+  if (counterSyncTimer) {
+    clearTimeout(counterSyncTimer);
+    counterSyncTimer = null;
+  }
   await chrome.storage.session.set({ activeRecordingState: state });
   broadcastState();
 }
 
 function broadcastState() {
   chrome.runtime.sendMessage({ type: 'RECORDING_STATE_UPDATED', payload: state }).catch(() => {});
+}
+
+function scheduleCounterSync() {
+  broadcastState();
+  if (counterSyncTimer) return;
+  counterSyncTimer = setTimeout(() => {
+    counterSyncTimer = null;
+    void chrome.storage.session.set({ activeRecordingState: state });
+  }, 250);
 }
 
 async function restoreStateIfNeeded() {
@@ -369,6 +384,7 @@ function finalizeNetworkEvent(sessionId: string, requestId: string, req: Pending
   };
 
   state.counters.network += 1;
+  scheduleCounterSync();
   enqueueEvent({
     id: `${sessionId}_net_${requestId}_${now}`,
     sessionId,
@@ -379,7 +395,10 @@ function finalizeNetworkEvent(sessionId: string, requestId: string, req: Pending
   });
 }
 
-chrome.debugger.onEvent.addListener((source, method, params: any) => {
+chrome.debugger.onEvent.addListener(async (source, method, params: any) => {
+  if (!state.sessionId) {
+    await restoreStateIfNeeded();
+  }
   if (!state.sessionId || source.tabId !== state.tabId || state.status !== 'recording') return;
 
   const sessionId = state.sessionId;
@@ -505,6 +524,10 @@ chrome.debugger.onEvent.addListener((source, method, params: any) => {
     };
 
     state.counters.console += 1;
+    if (payload.level === 'error') {
+      state.counters.errors += 1;
+    }
+    scheduleCounterSync();
     enqueueEvent({
       id: `${sessionId}_con_${crypto.randomUUID()}`,
       sessionId,
@@ -534,12 +557,46 @@ chrome.debugger.onEvent.addListener((source, method, params: any) => {
     };
 
     state.counters.errors += 1;
+    scheduleCounterSync();
     enqueueEvent({
       id: `${sessionId}_err_${crypto.randomUUID()}`,
       sessionId,
       timestamp: now,
       relativeTimeMs,
       type: 'exception',
+      payload,
+    });
+  } else if (method === 'Log.entryAdded') {
+    const entry = params.entry;
+    if (!entry) return;
+    const levelMap: Record<string, ConsoleEventPayload['level']> = {
+      verbose: 'debug',
+      info: 'info',
+      warning: 'warning',
+      error: 'error',
+    };
+    const mappedLevel = levelMap[entry.level] || 'log';
+    const msg = redactString(entry.text || 'Browser log entry');
+
+    const payload: ConsoleEventPayload = {
+      level: mappedLevel,
+      message: msg,
+      args: [msg],
+      sourceUrl: entry.url ? redactUrl(entry.url, redactParams) : undefined,
+      lineNumber: entry.lineNumber,
+    };
+
+    state.counters.console += 1;
+    if (mappedLevel === 'error') {
+      state.counters.errors += 1;
+    }
+    scheduleCounterSync();
+    enqueueEvent({
+      id: `${sessionId}_log_${crypto.randomUUID()}`,
+      sessionId,
+      timestamp: now,
+      relativeTimeMs,
+      type: 'console',
       payload,
     });
   }

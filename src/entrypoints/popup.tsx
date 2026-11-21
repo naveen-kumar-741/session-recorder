@@ -29,12 +29,17 @@ function PopupApp() {
   }, []);
 
   useEffect(() => {
-    if (!recState || recState.status !== 'recording') return;
+    if (!recState || (recState.status !== 'recording' && recState.status !== 'paused')) return;
     const id = setInterval(() => {
-      setElapsed(Date.now() - recState.startedAt - recState.accumulatedPauseMs);
+      if (recState.status === 'recording') {
+        setElapsed(Date.now() - recState.startedAt - recState.accumulatedPauseMs);
+      }
+      chrome.runtime.sendMessage({ type: 'GET_RECORDING_STATE' }).then((res) => {
+        if (res?.state) setRecState(res.state);
+      }).catch(() => {});
     }, 500);
     return () => clearInterval(id);
-  }, [recState]);
+  }, [recState?.status, recState?.startedAt, recState?.accumulatedPauseMs]);
 
   const sendCommand = async (type: string, payload?: Record<string, unknown>) => {
     setError('');
@@ -85,7 +90,7 @@ function PopupApp() {
       </div>
 
       {isActive && recState && (
-        <div className="grid grid-cols-3 gap-1.5 text-center bg-slate-900 text-white rounded-md p-2 text-xs">
+        <div className="grid grid-cols-4 gap-1.5 text-center bg-slate-900 text-white rounded-md p-2 text-xs">
           <div>
             <div className="text-[10px] text-slate-400">TIME</div>
             <div className="font-mono font-semibold">{formatDuration(elapsed)}</div>
@@ -93,6 +98,10 @@ function PopupApp() {
           <div>
             <div className="text-[10px] text-slate-400">NET</div>
             <div className="font-mono font-semibold">{recState.counters.network}</div>
+          </div>
+          <div>
+            <div className="text-[10px] text-slate-400">LOG</div>
+            <div className="font-mono font-semibold text-blue-300">{recState.counters.console}</div>
           </div>
           <div>
             <div className="text-[10px] text-slate-400">ERR</div>

@@ -1,6 +1,133 @@
 import JSZip from 'jszip';
 import { db } from '../database/db';
-import { SCHEMA_VERSION, type Session, type SessionEvent } from '../types/session';
+import {
+  SCHEMA_VERSION,
+  type ConsoleEventPayload,
+  type ExceptionEventPayload,
+  type NetworkEventPayload,
+  type Session,
+  type SessionEvent,
+} from '../types/session';
+
+export type ExportFormat =
+  | 'full-zip'
+  | 'video-webm'
+  | 'logs-json'
+  | 'logs-txt'
+  | 'network-json'
+  | 'errors-json';
+
+function formatTimestampOffset(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const mins = String(Math.floor(totalSec / 60)).padStart(2, '0');
+  const secs = String(totalSec % 60).padStart(2, '0');
+  const millis = String(ms % 1000).padStart(3, '0');
+  return `${mins}:${secs}.${millis}`;
+}
+
+export async function exportSessionVideo(sessionId: string): Promise<{ blob: Blob; filename: string }> {
+  const session = await db.sessions.get(sessionId);
+  if (!session) throw new Error('Session not found');
+
+  const chunks = await db.videoChunks.where('sessionId').equals(sessionId).sortBy('sequence');
+  if (chunks.length === 0) {
+    throw new Error('No video recording available for this session.');
+  }
+
+  const safeName = session.name.replace(/[^a-z0-9-_]+/gi, '_');
+  const blob = new Blob(
+    chunks.map((c) => c.blob),
+    { type: session.video.mimeType || 'video/webm' }
+  );
+  return { blob, filename: `${safeName}.webm` };
+}
+
+export async function exportSessionLogsJson(
+  sessionId: string,
+  filterType?: 'network' | 'console' | 'exception'
+): Promise<{ blob: Blob; filename: string }> {
+  const session = await db.sessions.get(sessionId);
+  if (!session) throw new Error('Session not found');
+
+  const allEvents = await db.events.where('sessionId').equals(sessionId).sortBy('relativeTimeMs');
+  const events = filterType ? allEvents.filter((e) => e.type === filterType) : allEvents;
+  const safeName = session.name.replace(/[^a-z0-9-_]+/gi, '_');
+
+  const payload = {
+    session: {
+      id: session.id,
+      name: session.name,
+      startedAt: new Date(session.startedAt).toISOString(),
+      durationMs: session.durationMs,
+      url: session.tab.initialUrl,
+      title: session.tab.initialTitle,
+      statistics: session.statistics,
+    },
+    exportedAt: new Date().toISOString(),
+    filter: filterType || 'all',
+    eventCount: events.length,
+    events,
+  };
+
+  const suffix = filterType ? `_${filterType}` : '_full_logs';
+  return {
+    blob: new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }),
+    filename: `${safeName}${suffix}.json`,
+  };
+}
+
+export async function exportSessionLogsTxt(sessionId: string): Promise<{ blob: Blob; filename: string }> {
+  const session = await db.sessions.get(sessionId);
+  if (!session) throw new Error('Session not found');
+
+  const events = await db.events.where('sessionId').equals(sessionId).sortBy('relativeTimeMs');
+  const safeName = session.name.replace(/[^a-z0-9-_]+/gi, '_');
+
+  const lines: string[] = [
+    `====================================================================`,
+    `SESSION RECORDER DIAGNOSTIC LOG`,
+    `====================================================================`,
+    `Session:   ${session.name}`,
+    `URL:       ${session.tab.initialUrl}`,
+    `Started:   ${new Date(session.startedAt).toISOString()}`,
+    `Duration:  ${(session.durationMs / 1000).toFixed(2)}s`,
+    `Summary:   ${session.statistics.networkRequests} network | ${session.statistics.consoleMessages} console | ${session.statistics.errors} errors`,
+    `====================================================================`,
+    ``,
+  ];
+
+  for (const ev of events) {
+    const ts = `[${formatTimestampOffset(ev.relativeTimeMs)}]`;
+    if (ev.type === 'network') {
+      const p = ev.payload as NetworkEventPayload;
+      const status = p.failureReason ? `FAILED (${p.failureReason})` : `${p.status ?? 'PENDING'}`;
+      const dur = p.durationMs !== undefined ? ` (${p.durationMs}ms)` : '';
+      lines.push(`${ts} [NETWORK] ${p.method} ${status} ${p.url}${dur}`);
+      if (p.requestBody) lines.push(`    Request Body: ${p.requestBody}`);
+      if (p.responseBody) lines.push(`    Response Body: ${p.responseBody}`);
+    } else if (ev.type === 'console') {
+      const p = ev.payload as ConsoleEventPayload;
+      lines.push(`${ts} [CONSOLE:${p.level.toUpperCase()}] ${p.message}`);
+      if (p.sourceUrl) lines.push(`    at ${p.sourceUrl}:${p.lineNumber ?? 0}:${p.columnNumber ?? 0}`);
+    } else if (ev.type === 'exception') {
+      const p = ev.payload as ExceptionEventPayload;
+      lines.push(`${ts} [EXCEPTION] ${p.message}`);
+      if (p.stackTrace) {
+        lines.push(
+          p.stackTrace
+            .split('\n')
+            .map((l) => `    ${l}`)
+            .join('\n')
+        );
+      }
+    }
+  }
+
+  return {
+    blob: new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' }),
+    filename: `${safeName}_full_logs.txt`,
+  };
+}
 
 export async function exportSessionAsZip(sessionId: string): Promise<Blob> {
   const session = await db.sessions.get(sessionId);
