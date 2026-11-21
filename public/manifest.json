@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Session Recorder",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Local-first browser session recording, CDP diagnostics, and synchronized replay.",
   "permissions": [
     "tabCapture",
