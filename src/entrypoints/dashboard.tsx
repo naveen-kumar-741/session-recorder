@@ -1,10 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import ReactDOM from 'react-dom/client';
 import {
+  ChevronDown,
   Download,
+  FileCode,
+  FileText,
+  Film,
   FolderOpen,
   HardDrive,
   LayoutDashboard,
+  Package,
   Play,
   Radio,
   Settings as SettingsIcon,
@@ -18,17 +23,36 @@ import {
   getStorageStats,
   updateSettings,
 } from '../database/db';
-import { exportSessionAsZip, importSessionFromZip } from '../services/archive-service';
+import {
+  exportSessionAsZip,
+  exportSessionLogsJson,
+  exportSessionLogsTxt,
+  exportSessionVideo,
+  importSessionFromZip,
+  type ExportFormat,
+} from '../services/archive-service';
 import { ReplayViewer } from '../features/replay/ReplayViewer';
-import type { ActiveRecordingState, ExtensionSettings, Session } from '../types/session';
+import type {
+  ActiveRecordingState,
+  ExtensionSettings,
+  Session,
+} from '../types/session';
 import '../index.css';
 
-type Route = 'dashboard' | 'recorder' | 'sessions' | 'replay' | 'import' | 'settings';
+type Route =
+  | 'dashboard'
+  | 'recorder'
+  | 'sessions'
+  | 'replay'
+  | 'import'
+  | 'settings';
 
 function DashboardApp() {
   const [route, setRoute] = useState<Route>('dashboard');
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
+    null,
+  );
   const [recState, setRecState] = useState<ActiveRecordingState | null>(null);
   const [tabs, setTabs] = useState<chrome.tabs.Tab[]>([]);
   const [selectedTabId, setSelectedTabId] = useState<number | null>(null);
@@ -40,9 +64,13 @@ function DashboardApp() {
     quotaBytes?: number;
     usageBytes?: number;
   }>({ totalSessions: 0, totalDurationMs: 0, totalVideoBytes: 0 });
-  const [importProgress, setImportProgress] = useState<{ pct: number; stage: string } | null>(null);
+  const [importProgress, setImportProgress] = useState<{
+    pct: number;
+    stage: string;
+  } | null>(null);
   const [bannerError, setBannerError] = useState<string>('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [openExportMenuId, setOpenExportMenuId] = useState<string | null>(null);
 
   const refreshData = async () => {
     const all = await db.sessions.orderBy('startedAt').reverse().toArray();
@@ -58,7 +86,11 @@ function DashboardApp() {
     });
     chrome.tabs.query({ windowType: 'normal' }).then((list) => {
       const recordable = list.filter(
-        (t) => t.id && t.url && !t.url.startsWith('chrome://') && !t.url.startsWith('chrome-extension://')
+        (t) =>
+          t.id &&
+          t.url &&
+          !t.url.startsWith('chrome://') &&
+          !t.url.startsWith('chrome-extension://'),
       );
       setTabs(recordable);
       if (recordable[0]?.id) setSelectedTabId(recordable[0].id);
@@ -75,11 +107,14 @@ function DashboardApp() {
     chrome.runtime.onMessage.addListener(listener);
 
     const pollId = setInterval(() => {
-      chrome.runtime.sendMessage({ type: 'GET_RECORDING_STATE' }).then((res) => {
-        if (res?.state) {
-          setRecState(res.state);
-        }
-      }).catch(() => {});
+      chrome.runtime
+        .sendMessage({ type: 'GET_RECORDING_STATE' })
+        .then((res) => {
+          if (res?.state) {
+            setRecState(res.state);
+          }
+        })
+        .catch(() => {});
     }, 1000);
 
     return () => {
@@ -103,18 +138,58 @@ function DashboardApp() {
   const handleStartRecording = async () => {
     if (!selectedTabId) return;
     setBannerError('');
-    const res = await chrome.runtime.sendMessage({ type: 'START_RECORDING', tabId: selectedTabId });
+    const res = await chrome.runtime.sendMessage({
+      type: 'START_RECORDING',
+      tabId: selectedTabId,
+    });
     if (!res?.ok) setBannerError(res?.error || 'Failed to start recording');
   };
 
-  const handleExport = async (session: Session) => {
-    const blob = await exportSessionAsZip(session.id);
+  const triggerDownload = (blob: Blob, filename: string) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${session.name.replace(/[^a-z0-9-_]+/gi, '_')}.zip`;
+    a.download = filename;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleExport = async (
+    session: Session,
+    format: ExportFormat = 'full-zip',
+  ) => {
+    setBannerError('');
+    setOpenExportMenuId(null);
+    try {
+      const safeName = session.name.replace(/[^a-z0-9-_]+/gi, '_');
+      if (format === 'full-zip') {
+        const blob = await exportSessionAsZip(session.id);
+        triggerDownload(blob, `${safeName}.zip`);
+      } else if (format === 'video-webm') {
+        const { blob, filename } = await exportSessionVideo(session.id);
+        triggerDownload(blob, filename);
+      } else if (format === 'logs-json') {
+        const { blob, filename } = await exportSessionLogsJson(session.id);
+        triggerDownload(blob, filename);
+      } else if (format === 'logs-txt') {
+        const { blob, filename } = await exportSessionLogsTxt(session.id);
+        triggerDownload(blob, filename);
+      } else if (format === 'network-json') {
+        const { blob, filename } = await exportSessionLogsJson(
+          session.id,
+          'network',
+        );
+        triggerDownload(blob, filename);
+      } else if (format === 'errors-json') {
+        const { blob, filename } = await exportSessionLogsJson(
+          session.id,
+          'exception',
+        );
+        triggerDownload(blob, filename);
+      }
+    } catch (err) {
+      setBannerError((err as Error).message);
+    }
   };
 
   const handleDelete = async (id: string) => {
@@ -141,7 +216,7 @@ function DashboardApp() {
   const filteredSessions = sessions.filter(
     (s) =>
       s.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      s.tab.initialUrl.toLowerCase().includes(searchTerm.toLowerCase())
+      s.tab.initialUrl.toLowerCase().includes(searchTerm.toLowerCase()),
   );
 
   return (
@@ -187,7 +262,10 @@ function DashboardApp() {
         )}
 
         {route === 'replay' && selectedSessionId && (
-          <ReplayViewer sessionId={selectedSessionId} onBack={() => setRoute('sessions')} />
+          <ReplayViewer
+            sessionId={selectedSessionId}
+            onBack={() => setRoute('sessions')}
+          />
         )}
 
         {route === 'dashboard' && (
@@ -211,7 +289,8 @@ function DashboardApp() {
             </div>
 
             {(() => {
-              const usedBytes = storageStats.usageBytes ?? storageStats.totalVideoBytes;
+              const usedBytes =
+                storageStats.usageBytes ?? storageStats.totalVideoBytes;
               const availableBytes =
                 storageStats.quotaBytes !== undefined
                   ? Math.max(0, storageStats.quotaBytes - usedBytes)
@@ -225,18 +304,28 @@ function DashboardApp() {
                 <div className="flex flex-col gap-4">
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                     <div className="bg-white border border-slate-200 rounded-lg p-4">
-                      <div className="text-xs text-slate-500">Total Sessions</div>
-                      <div className="text-2xl font-bold mt-1">{storageStats.totalSessions}</div>
+                      <div className="text-xs text-slate-500">
+                        Total Sessions
+                      </div>
+                      <div className="text-2xl font-bold mt-1">
+                        {storageStats.totalSessions}
+                      </div>
                     </div>
                     <div className="bg-white border border-slate-200 rounded-lg p-4">
-                      <div className="text-xs text-slate-500">Total Recorded Time</div>
-                      <div className="text-2xl font-bold mt-1">{formatDuration(storageStats.totalDurationMs)}</div>
+                      <div className="text-xs text-slate-500">
+                        Total Recorded Time
+                      </div>
+                      <div className="text-2xl font-bold mt-1">
+                        {formatDuration(storageStats.totalDurationMs)}
+                      </div>
                     </div>
                     <div className="bg-white border border-slate-200 rounded-lg p-4">
                       <div className="text-xs text-slate-500 flex items-center gap-1">
                         <HardDrive className="w-3.5 h-3.5" /> Used Storage
                       </div>
-                      <div className="text-2xl font-bold mt-1">{formatBytes(usedBytes)}</div>
+                      <div className="text-2xl font-bold mt-1">
+                        {formatBytes(usedBytes)}
+                      </div>
                       <div className="text-[11px] text-slate-400 mt-1">
                         Videos: {formatBytes(storageStats.totalVideoBytes)}
                       </div>
@@ -246,7 +335,9 @@ function DashboardApp() {
                         <HardDrive className="w-3.5 h-3.5" /> Available Storage
                       </div>
                       <div className="text-2xl font-bold mt-1">
-                        {availableBytes !== undefined ? formatBytes(availableBytes) : 'Estimating...'}
+                        {availableBytes !== undefined
+                          ? formatBytes(availableBytes)
+                          : 'Estimating...'}
                       </div>
                       <div className="text-[11px] text-slate-400 mt-1">
                         {storageStats.quotaBytes !== undefined
@@ -259,15 +350,23 @@ function DashboardApp() {
                   {usagePct !== undefined && (
                     <div className="bg-white border border-slate-200 rounded-lg p-4">
                       <div className="flex items-center justify-between text-xs mb-2">
-                        <span className="font-medium text-slate-700">Browser Storage Quota Usage</span>
+                        <span className="font-medium text-slate-700">
+                          Browser Storage Quota Usage
+                        </span>
                         <span className="font-mono text-slate-600">
-                          {formatBytes(usedBytes)} used / {formatBytes(availableBytes ?? 0)} available ({usagePct.toFixed(1)}%)
+                          {formatBytes(usedBytes)} used /{' '}
+                          {formatBytes(availableBytes ?? 0)} available (
+                          {usagePct.toFixed(1)}%)
                         </span>
                       </div>
                       <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
                         <div
                           className={`h-full transition-all ${
-                            usagePct > 85 ? 'bg-red-600' : usagePct > 65 ? 'bg-amber-500' : 'bg-blue-600'
+                            usagePct > 85
+                              ? 'bg-red-600'
+                              : usagePct > 65
+                                ? 'bg-amber-500'
+                                : 'bg-blue-600'
                           }`}
                           style={{ width: `${usagePct}%` }}
                         />
@@ -281,13 +380,20 @@ function DashboardApp() {
             <div className="bg-white border border-slate-200 rounded-lg p-4">
               <h2 className="text-sm font-semibold mb-3">Recent Sessions</h2>
               {sessions.length === 0 ? (
-                <p className="text-xs text-slate-500">No sessions recorded yet.</p>
+                <p className="text-xs text-slate-500">
+                  No sessions recorded yet.
+                </p>
               ) : (
                 <div className="divide-y divide-slate-100">
                   {sessions.slice(0, 5).map((s) => (
-                    <div key={s.id} className="py-2.5 flex items-center justify-between text-xs">
+                    <div
+                      key={s.id}
+                      className="py-2.5 flex items-center justify-between text-xs"
+                    >
                       <div>
-                        <div className="font-medium text-slate-900">{s.name}</div>
+                        <div className="font-medium text-slate-900">
+                          {s.name}
+                        </div>
                         <div className="text-slate-500">{s.tab.initialUrl}</div>
                       </div>
                       <button
@@ -311,16 +417,22 @@ function DashboardApp() {
           <div className="bg-white border border-slate-200 rounded-lg p-6 max-w-2xl flex flex-col gap-4">
             <h1 className="text-lg font-bold">Tab Session Recorder</h1>
             <p className="text-xs text-slate-600">
-              Attaches Chrome DevTools Protocol to capture network and console diagnostics alongside tab video.
-              Chrome will display a debugging banner on the target tab while recording.
+              Attaches Chrome DevTools Protocol to capture network and console
+              diagnostics alongside tab video. Chrome will display a debugging
+              banner on the target tab while recording.
             </p>
 
             <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">Target Browser Tab</label>
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                Target Browser Tab
+              </label>
               <select
                 value={selectedTabId ?? ''}
                 onChange={(e) => setSelectedTabId(Number(e.target.value))}
-                disabled={recState?.status === 'recording' || recState?.status === 'paused'}
+                disabled={
+                  recState?.status === 'recording' ||
+                  recState?.status === 'paused'
+                }
                 className="w-full border border-slate-300 rounded-md px-3 py-2 text-xs"
               >
                 {tabs.map((t) => (
@@ -333,10 +445,22 @@ function DashboardApp() {
 
             {recState && recState.status !== 'idle' && (
               <div className="bg-slate-50 border border-slate-200 rounded-md p-3 text-xs grid grid-cols-2 gap-2">
-                <div>Status: <strong className="uppercase">{recState.status}</strong></div>
-                <div>Video Collector: <strong>{recState.collectors.video}</strong></div>
-                <div>Network Events: <strong>{recState.counters.network}</strong></div>
-                <div>Console / Errors: <strong>{recState.counters.console} / {recState.counters.errors}</strong></div>
+                <div>
+                  Status:{' '}
+                  <strong className="uppercase">{recState.status}</strong>
+                </div>
+                <div>
+                  Video Collector: <strong>{recState.collectors.video}</strong>
+                </div>
+                <div>
+                  Network Events: <strong>{recState.counters.network}</strong>
+                </div>
+                <div>
+                  Console / Errors:{' '}
+                  <strong>
+                    {recState.counters.console} / {recState.counters.errors}
+                  </strong>
+                </div>
               </div>
             )}
 
@@ -353,7 +477,10 @@ function DashboardApp() {
                   <button
                     onClick={() =>
                       chrome.runtime.sendMessage({
-                        type: recState.status === 'paused' ? 'RESUME_RECORDING' : 'PAUSE_RECORDING',
+                        type:
+                          recState.status === 'paused'
+                            ? 'RESUME_RECORDING'
+                            : 'PAUSE_RECORDING',
                       })
                     }
                     className="px-4 py-2 bg-slate-200 text-slate-900 text-xs font-medium rounded-md cursor-pointer"
@@ -361,7 +488,9 @@ function DashboardApp() {
                     {recState.status === 'paused' ? 'Resume' : 'Pause'}
                   </button>
                   <button
-                    onClick={() => chrome.runtime.sendMessage({ type: 'STOP_RECORDING' })}
+                    onClick={() =>
+                      chrome.runtime.sendMessage({ type: 'STOP_RECORDING' })
+                    }
                     className="px-4 py-2 bg-slate-900 text-white text-xs font-medium rounded-md cursor-pointer"
                   >
                     Stop & Save
@@ -385,7 +514,7 @@ function DashboardApp() {
               />
             </div>
 
-            <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+            <div className="bg-white border border-slate-200 rounded-lg overflow-visible">
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
                   <tr>
@@ -400,13 +529,18 @@ function DashboardApp() {
                   {filteredSessions.map((s) => (
                     <tr key={s.id} className="hover:bg-slate-50">
                       <td className="p-3">
-                        <div className="font-medium text-slate-900">{s.name}</div>
-                        <div className="text-slate-500 truncate max-w-xs">{s.tab.initialUrl}</div>
+                        <div className="font-medium text-slate-900">
+                          {s.name}
+                        </div>
+                        <div className="text-slate-500 truncate max-w-xs">
+                          {s.tab.initialUrl}
+                        </div>
                       </td>
                       <td className="p-3">{formatDuration(s.durationMs)}</td>
                       <td className="p-3">{formatBytes(s.video.totalBytes)}</td>
                       <td className="p-3">
-                        {s.statistics.networkRequests} req · {s.statistics.errors} err
+                        {s.statistics.networkRequests} req ·{' '}
+                        {s.statistics.errors} err
                       </td>
                       <td className="p-3 text-right">
                         <div className="inline-flex gap-1.5">
@@ -420,13 +554,90 @@ function DashboardApp() {
                           >
                             <Play className="w-3.5 h-3.5" />
                           </button>
-                          <button
-                            onClick={() => handleExport(s)}
-                            className="p-1.5 bg-slate-100 text-slate-700 rounded hover:bg-slate-200 cursor-pointer"
-                            title="Export ZIP"
-                          >
-                            <Download className="w-3.5 h-3.5" />
-                          </button>
+                          <div className="relative">
+                            <button
+                              onClick={() =>
+                                setOpenExportMenuId((prev) =>
+                                  prev === s.id ? null : s.id,
+                                )
+                              }
+                              className="inline-flex items-center gap-1 px-2 py-1.5 bg-slate-100 text-slate-700 rounded hover:bg-slate-200 cursor-pointer text-[11px] font-medium"
+                              title="Download options"
+                            >
+                              <Download className="w-3.5 h-3.5" />
+                              Export
+                              <ChevronDown className="w-3 h-3" />
+                            </button>
+
+                            {openExportMenuId === s.id && (
+                              <div
+                                className={`absolute right-0 ${
+                                  filteredSessions.indexOf(s) >=
+                                    filteredSessions.length - 1 &&
+                                  filteredSessions.length > 1
+                                    ? 'bottom-full mb-1'
+                                    : 'mt-1'
+                                } w-52 bg-white border border-slate-200 rounded-md shadow-lg py-1 z-50 text-left text-xs`}
+                              >
+                                <button
+                                  onClick={() =>
+                                    void handleExport(s, 'full-zip')
+                                  }
+                                  className="w-full px-3 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-800 cursor-pointer"
+                                >
+                                  <Package className="w-3.5 h-3.5 text-slate-500" />
+                                  Full Session (.zip)
+                                </button>
+                                <button
+                                  onClick={() =>
+                                    void handleExport(s, 'video-webm')
+                                  }
+                                  className="w-full px-3 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-800 cursor-pointer"
+                                >
+                                  <Film className="w-3.5 h-3.5 text-blue-600" />
+                                  Video Alone (.webm)
+                                </button>
+                                <div className="my-1 border-t border-slate-100" />
+                                <button
+                                  onClick={() =>
+                                    void handleExport(s, 'logs-json')
+                                  }
+                                  className="w-full px-3 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-800 cursor-pointer"
+                                >
+                                  <FileCode className="w-3.5 h-3.5 text-emerald-600" />
+                                  Full Logs (.json)
+                                </button>
+                                <button
+                                  onClick={() =>
+                                    void handleExport(s, 'logs-txt')
+                                  }
+                                  className="w-full px-3 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-800 cursor-pointer"
+                                >
+                                  <FileText className="w-3.5 h-3.5 text-slate-600" />
+                                  Full Logs (.txt)
+                                </button>
+                                <div className="my-1 border-t border-slate-100" />
+                                <button
+                                  onClick={() =>
+                                    void handleExport(s, 'network-json')
+                                  }
+                                  className="w-full px-3 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-800 cursor-pointer"
+                                >
+                                  <FileCode className="w-3.5 h-3.5 text-indigo-600" />
+                                  Network Only (.json)
+                                </button>
+                                <button
+                                  onClick={() =>
+                                    void handleExport(s, 'errors-json')
+                                  }
+                                  className="w-full px-3 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-800 cursor-pointer"
+                                >
+                                  <FileCode className="w-3.5 h-3.5 text-red-600" />
+                                  Errors Only (.json)
+                                </button>
+                              </div>
+                            )}
+                          </div>
                           <button
                             onClick={() => handleDelete(s.id)}
                             className="p-1.5 bg-red-50 text-red-600 rounded hover:bg-red-100 cursor-pointer"
@@ -449,7 +660,9 @@ function DashboardApp() {
             <h1 className="text-lg font-bold">Import Session ZIP</h1>
             <label className="border-2 border-dashed border-slate-300 rounded-lg p-8 text-center cursor-pointer hover:border-blue-500">
               <Upload className="w-6 h-6 mx-auto text-slate-400 mb-2" />
-              <div className="text-xs font-medium text-slate-700">Select a `.zip` session archive</div>
+              <div className="text-xs font-medium text-slate-700">
+                Select a `.zip` session archive
+              </div>
               <input
                 type="file"
                 accept=".zip,application/zip"
@@ -478,7 +691,9 @@ function DashboardApp() {
                 type="checkbox"
                 checked={settings.captureAudio}
                 onChange={async (e) => {
-                  setSettings(await updateSettings({ captureAudio: e.target.checked }));
+                  setSettings(
+                    await updateSettings({ captureAudio: e.target.checked }),
+                  );
                 }}
               />
             </label>
@@ -489,18 +704,27 @@ function DashboardApp() {
                 type="checkbox"
                 checked={settings.captureNetworkBodies}
                 onChange={async (e) => {
-                  setSettings(await updateSettings({ captureNetworkBodies: e.target.checked }));
+                  setSettings(
+                    await updateSettings({
+                      captureNetworkBodies: e.target.checked,
+                    }),
+                  );
                 }}
               />
             </label>
 
             <label className="flex items-center justify-between">
-              <span>Redact Sensitive Headers & JSON Fields (Passwords, Tokens, API Keys)</span>
+              <span>
+                Redact Sensitive Headers & JSON Fields (Passwords, Tokens, API
+                Keys)
+              </span>
               <input
                 type="checkbox"
                 checked={settings.redactHeaders}
                 onChange={async (e) => {
-                  setSettings(await updateSettings({ redactHeaders: e.target.checked }));
+                  setSettings(
+                    await updateSettings({ redactHeaders: e.target.checked }),
+                  );
                 }}
               />
             </label>
@@ -511,34 +735,50 @@ function DashboardApp() {
                 type="checkbox"
                 checked={settings.redactQueryParams}
                 onChange={async (e) => {
-                  setSettings(await updateSettings({ redactQueryParams: e.target.checked }));
+                  setSettings(
+                    await updateSettings({
+                      redactQueryParams: e.target.checked,
+                    }),
+                  );
                 }}
               />
             </label>
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block font-medium mb-1">Max Body Size per Request (KB)</label>
+                <label className="block font-medium mb-1">
+                  Max Body Size per Request (KB)
+                </label>
                 <input
                   type="number"
                   min={16}
                   max={2048}
                   value={settings.maxBodySizeKb}
                   onChange={async (e) => {
-                    setSettings(await updateSettings({ maxBodySizeKb: Number(e.target.value) }));
+                    setSettings(
+                      await updateSettings({
+                        maxBodySizeKb: Number(e.target.value),
+                      }),
+                    );
                   }}
                   className="border border-slate-300 rounded px-2.5 py-1.5 w-full"
                 />
               </div>
               <div>
-                <label className="block font-medium mb-1">Max Session Size Limit (MB)</label>
+                <label className="block font-medium mb-1">
+                  Max Session Size Limit (MB)
+                </label>
                 <input
                   type="number"
                   min={50}
                   max={4096}
                   value={settings.maxSessionSizeMb}
                   onChange={async (e) => {
-                    setSettings(await updateSettings({ maxSessionSizeMb: Number(e.target.value) }));
+                    setSettings(
+                      await updateSettings({
+                        maxSessionSizeMb: Number(e.target.value),
+                      }),
+                    );
                   }}
                   className="border border-slate-300 rounded px-2.5 py-1.5 w-full"
                 />
@@ -554,5 +794,5 @@ function DashboardApp() {
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <DashboardApp />
-  </React.StrictMode>
+  </React.StrictMode>,
 );

@@ -1,6 +1,28 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, Check, ChevronDown, ChevronRight, Copy, Pause, Play, Search, X } from 'lucide-react';
+import {
+  ArrowLeft,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Download,
+  FileCode,
+  FileText,
+  Film,
+  Package,
+  Pause,
+  Play,
+  Search,
+  X,
+} from 'lucide-react';
 import { db } from '../../database/db';
+import {
+  exportSessionAsZip,
+  exportSessionLogsJson,
+  exportSessionLogsTxt,
+  exportSessionVideo,
+  type ExportFormat,
+} from '../../services/archive-service';
 import type {
   ConsoleEventPayload,
   ExceptionEventPayload,
@@ -208,6 +230,7 @@ export function ReplayViewer({ sessionId, onBack }: ReplayViewerProps) {
   const [activeTab, setActiveTab] = useState<'all' | 'network' | 'console' | 'exception'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
+  const [exportOpen, setExportOpen] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -277,6 +300,39 @@ export function ReplayViewer({ sessionId, onBack }: ReplayViewerProps) {
     }
   };
 
+  const handleDownload = async (format: ExportFormat) => {
+    if (!session) return;
+    setExportOpen(false);
+    const safeName = session.name.replace(/[^a-z0-9-_]+/gi, '_');
+    const save = (blob: Blob, filename: string) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    };
+
+    if (format === 'full-zip') {
+      save(await exportSessionAsZip(session.id), `${safeName}.zip`);
+    } else if (format === 'video-webm') {
+      const { blob, filename } = await exportSessionVideo(session.id);
+      save(blob, filename);
+    } else if (format === 'logs-json') {
+      const { blob, filename } = await exportSessionLogsJson(session.id);
+      save(blob, filename);
+    } else if (format === 'logs-txt') {
+      const { blob, filename } = await exportSessionLogsTxt(session.id);
+      save(blob, filename);
+    } else if (format === 'network-json') {
+      const { blob, filename } = await exportSessionLogsJson(session.id, 'network');
+      save(blob, filename);
+    } else if (format === 'errors-json') {
+      const { blob, filename } = await exportSessionLogsJson(session.id, 'exception');
+      save(blob, filename);
+    }
+  };
+
   const formatMs = (ms: number) => {
     const totalSec = Math.floor(ms / 1000);
     const m = String(Math.floor(totalSec / 60)).padStart(2, '0');
@@ -308,6 +364,69 @@ export function ReplayViewer({ sessionId, onBack }: ReplayViewerProps) {
           <span>Network: {session.statistics.networkRequests}</span>
           <span>Console: {session.statistics.consoleMessages}</span>
           <span className="text-red-600 font-medium">Errors: {session.statistics.errors}</span>
+
+          <div className="relative">
+            <button
+              onClick={() => setExportOpen((prev) => !prev)}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-900 text-white rounded hover:bg-slate-800 cursor-pointer font-medium"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Download
+              <ChevronDown className="w-3 h-3" />
+            </button>
+
+            {exportOpen && (
+              <div
+                className="absolute right-0 mt-1 w-52 bg-white border border-slate-200 rounded-md shadow-lg py-1 z-30 text-left text-xs"
+                onMouseLeave={() => setExportOpen(false)}
+              >
+                <button
+                  onClick={() => void handleDownload('full-zip')}
+                  className="w-full px-3 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-800 cursor-pointer"
+                >
+                  <Package className="w-3.5 h-3.5 text-slate-500" />
+                  Full Session (.zip)
+                </button>
+                <button
+                  onClick={() => void handleDownload('video-webm')}
+                  className="w-full px-3 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-800 cursor-pointer"
+                >
+                  <Film className="w-3.5 h-3.5 text-blue-600" />
+                  Video Alone (.webm)
+                </button>
+                <div className="my-1 border-t border-slate-100" />
+                <button
+                  onClick={() => void handleDownload('logs-json')}
+                  className="w-full px-3 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-800 cursor-pointer"
+                >
+                  <FileCode className="w-3.5 h-3.5 text-emerald-600" />
+                  Full Logs (.json)
+                </button>
+                <button
+                  onClick={() => void handleDownload('logs-txt')}
+                  className="w-full px-3 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-800 cursor-pointer"
+                >
+                  <FileText className="w-3.5 h-3.5 text-slate-600" />
+                  Full Logs (.txt)
+                </button>
+                <div className="my-1 border-t border-slate-100" />
+                <button
+                  onClick={() => void handleDownload('network-json')}
+                  className="w-full px-3 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-800 cursor-pointer"
+                >
+                  <FileCode className="w-3.5 h-3.5 text-indigo-600" />
+                  Network Only (.json)
+                </button>
+                <button
+                  onClick={() => void handleDownload('errors-json')}
+                  className="w-full px-3 py-1.5 hover:bg-slate-50 flex items-center gap-2 text-slate-800 cursor-pointer"
+                >
+                  <FileCode className="w-3.5 h-3.5 text-red-600" />
+                  Errors Only (.json)
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
