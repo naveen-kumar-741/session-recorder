@@ -37,6 +37,8 @@ function DashboardApp() {
     totalSessions: number;
     totalDurationMs: number;
     totalVideoBytes: number;
+    quotaBytes?: number;
+    usageBytes?: number;
   }>({ totalSessions: 0, totalDurationMs: 0, totalVideoBytes: 0 });
   const [importProgress, setImportProgress] = useState<{ pct: number; stage: string } | null>(null);
   const [bannerError, setBannerError] = useState<string>('');
@@ -196,22 +198,73 @@ function DashboardApp() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="bg-white border border-slate-200 rounded-lg p-4">
-                <div className="text-xs text-slate-500">Total Sessions</div>
-                <div className="text-2xl font-bold mt-1">{storageStats.totalSessions}</div>
-              </div>
-              <div className="bg-white border border-slate-200 rounded-lg p-4">
-                <div className="text-xs text-slate-500">Total Recorded Time</div>
-                <div className="text-2xl font-bold mt-1">{formatDuration(storageStats.totalDurationMs)}</div>
-              </div>
-              <div className="bg-white border border-slate-200 rounded-lg p-4">
-                <div className="text-xs text-slate-500 flex items-center gap-1">
-                  <HardDrive className="w-3.5 h-3.5" /> Local Storage Used
+            {(() => {
+              const usedBytes = storageStats.usageBytes ?? storageStats.totalVideoBytes;
+              const availableBytes =
+                storageStats.quotaBytes !== undefined
+                  ? Math.max(0, storageStats.quotaBytes - usedBytes)
+                  : undefined;
+              const usagePct =
+                storageStats.quotaBytes && storageStats.quotaBytes > 0
+                  ? Math.min(100, (usedBytes / storageStats.quotaBytes) * 100)
+                  : undefined;
+
+              return (
+                <div className="flex flex-col gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="bg-white border border-slate-200 rounded-lg p-4">
+                      <div className="text-xs text-slate-500">Total Sessions</div>
+                      <div className="text-2xl font-bold mt-1">{storageStats.totalSessions}</div>
+                    </div>
+                    <div className="bg-white border border-slate-200 rounded-lg p-4">
+                      <div className="text-xs text-slate-500">Total Recorded Time</div>
+                      <div className="text-2xl font-bold mt-1">{formatDuration(storageStats.totalDurationMs)}</div>
+                    </div>
+                    <div className="bg-white border border-slate-200 rounded-lg p-4">
+                      <div className="text-xs text-slate-500 flex items-center gap-1">
+                        <HardDrive className="w-3.5 h-3.5" /> Used Storage
+                      </div>
+                      <div className="text-2xl font-bold mt-1">{formatBytes(usedBytes)}</div>
+                      <div className="text-[11px] text-slate-400 mt-1">
+                        Videos: {formatBytes(storageStats.totalVideoBytes)}
+                      </div>
+                    </div>
+                    <div className="bg-white border border-slate-200 rounded-lg p-4">
+                      <div className="text-xs text-slate-500 flex items-center gap-1">
+                        <HardDrive className="w-3.5 h-3.5" /> Available Storage
+                      </div>
+                      <div className="text-2xl font-bold mt-1">
+                        {availableBytes !== undefined ? formatBytes(availableBytes) : 'Estimating...'}
+                      </div>
+                      <div className="text-[11px] text-slate-400 mt-1">
+                        {storageStats.quotaBytes !== undefined
+                          ? `Quota: ${formatBytes(storageStats.quotaBytes)}`
+                          : 'Browser storage estimate'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {usagePct !== undefined && (
+                    <div className="bg-white border border-slate-200 rounded-lg p-4">
+                      <div className="flex items-center justify-between text-xs mb-2">
+                        <span className="font-medium text-slate-700">Browser Storage Quota Usage</span>
+                        <span className="font-mono text-slate-600">
+                          {formatBytes(usedBytes)} used / {formatBytes(availableBytes ?? 0)} available ({usagePct.toFixed(1)}%)
+                        </span>
+                      </div>
+                      <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full transition-all ${
+                            usagePct > 85 ? 'bg-red-600' : usagePct > 65 ? 'bg-amber-500' : 'bg-blue-600'
+                          }`}
+                          style={{ width: `${usagePct}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
-                <div className="text-2xl font-bold mt-1">{formatBytes(storageStats.totalVideoBytes)}</div>
-              </div>
-            </div>
+              );
+            })()}
 
             <div className="bg-white border border-slate-200 rounded-lg p-4">
               <h2 className="text-sm font-semibold mb-3">Recent Sessions</h2>
